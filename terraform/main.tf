@@ -80,6 +80,14 @@ resource "aws_organizations_organizational_unit" "shared_services" {
   tags = local.common_tags
 }
 
+resource "aws_organizations_organizational_unit" "log_archive" {
+  count     = var.environment == "master" ? 1 : 0
+  name      = "LogArchive"
+  parent_id = aws_organizations_organization.main[0].roots[0].id
+
+  tags = local.common_tags
+}
+
 resource "aws_organizations_organizational_unit" "workloads" {
   count     = var.environment == "master" ? 1 : 0
   name      = "Workloads"
@@ -88,7 +96,10 @@ resource "aws_organizations_organizational_unit" "workloads" {
   tags = local.common_tags
 }
 
+# ============================================================================
 # Service Control Policies
+# ============================================================================
+
 resource "aws_organizations_policy" "deny_root_access" {
   count = var.environment == "master" ? 1 : 0
 
@@ -115,6 +126,214 @@ resource "aws_organizations_policy" "deny_root_access" {
   })
 
   tags = local.common_tags
+}
+
+resource "aws_organizations_policy" "prevent_leaving_org" {
+  count = var.environment == "master" ? 1 : 0
+
+  name        = "PreventLeavingOrganization"
+  description = "Prevent member accounts from leaving the organization"
+
+  content = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "DenyLeaveOrganization",
+        Effect = "Deny",
+        Action = [
+          "organizations:LeaveOrganization"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_organizations_policy" "region_restriction" {
+  count = var.environment == "master" ? 1 : 0
+
+  name        = "RegionRestriction"
+  description = "Limit AWS regions to approved locations"
+
+  content = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "DenyUnapprovedRegions",
+        Effect = "Deny",
+        NotAction = [
+          "a4b:*",
+          "acm:*",
+          "aws-marketplace:*",
+          "aws-portal:*",
+          "budgets:*",
+          "ce:*",
+          "chime:*",
+          "cloudfront:*",
+          "config:*",
+          "cur:*",
+          "directconnect:*",
+          "ec2:Describe*",
+          "fms:*",
+          "globalaccelerator:*",
+          "health:*",
+          "iam:*",
+          "importexport:*",
+          "kms:*",
+          "mobileanalytics:*",
+          "networkmanager:*",
+          "organizations:*",
+          "pricing:*",
+          "route53:*",
+          "s3:Get*",
+          "s3:List*",
+          "s3:Describe*",
+          "shield:*",
+          "sts:*",
+          "support:*",
+          "trustedadvisor:*",
+          "waf-regional:*",
+          "waf:*",
+          "wafv2:*"
+        ],
+        Resource = "*",
+        Condition = {
+          StringNotEquals = {
+            "aws:RequestedRegion" = [
+              "us-east-1", # Primary region
+              "us-west-2", # DR region
+              "eu-west-1"  # Compliance region
+            ]
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_organizations_policy" "s3_encryption" {
+  count = var.environment == "master" ? 1 : 0
+
+  name        = "S3EncryptionRequirement"
+  description = "Enforce S3 bucket encryption"
+
+  content = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "DenyUnencryptedS3",
+        Effect = "Deny",
+        Action = [
+          "s3:PutObject",
+          "s3:CreateBucket"
+        ],
+        Resource = "*",
+        Condition = {
+          Null = {
+            "s3:x-amz-server-side-encryption" = "true"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_organizations_policy" "prevent_critical_deletion" {
+  count = var.environment == "master" ? 1 : 0
+
+  name        = "PreventCriticalDeletion"
+  description = "Block deletion of key resources"
+
+  content = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "DenyDeletingVPCs",
+        Effect = "Deny",
+        Action = [
+          "ec2:DeleteVpc",
+          "ec2:DeleteVpcEndpoints"
+        ],
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyDeletingLogs",
+        Effect = "Deny",
+        Action = [
+          "logs:DeleteLogGroup",
+          "logs:DeleteLogStream"
+        ],
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyDeletingIAM",
+        Effect = "Deny",
+        Action = [
+          "iam:DeleteUser",
+          "iam:DeleteRole",
+          "iam:DeletePolicy"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_organizations_policy" "require_mfa" {
+  count = var.environment == "master" ? 1 : 0
+
+  name        = "RequireMFAForPrivilegedActions"
+  description = "Enforce MFA for sensitive operations"
+
+  content = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "DenyNoMFA",
+        Effect = "Deny",
+        Action = [
+          "iam:*",
+          "ec2:*",
+          "rds:*",
+          "s3:*",
+          "kms:*"
+        ],
+        Resource = "*",
+        Condition = {
+          BoolIfExists = {
+            "aws:MultiFactorAuthPresent" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_organizations_policy" "block_public_s3" {
+  count = var.environment == "master" ? 1 : 0
+
+  name        = "BlockPublicS3Access"
+  description = "Prevent S3 buckets from being made public"
+
+  content = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "DenyPublicS3",
+        Effect = "Deny",
+        Action = [
+          "s3:PutBucketPublicAccessBlock",
+          "s3:PutBucketPolicy"
+        ],
+        Resource = "*",
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-acl" = "private"
+          }
+        }
+      }
+    ]
+  })
 }
 
 # ============================================================================
